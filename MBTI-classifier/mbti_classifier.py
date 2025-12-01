@@ -13,7 +13,7 @@ import torch
 import torch.nn as nn
 from datasets import Dataset
 from sklearn.model_selection import train_test_split
-from sklearn.metrics import classification_report
+from sklearn.metrics import classification_report,f1_score,accuracy_score
 import matplotlib.pyplot as plt
 from transformers import (
     AutoTokenizer,
@@ -91,6 +91,13 @@ class CustomTrainer(Trainer):
         return (loss, outputs) if return_outputs else loss
 
 
+def compute_metrics(eval_pred):
+    logits, labels = eval_pred
+    preds = np.argmax(logits, axis=-1)
+    return {
+        "accuracy": accuracy_score(labels, preds),
+        "f1_macro": f1_score(labels, preds, average="macro"),
+    }
 # ===========================
 # 單一軸訓練
 # ===========================
@@ -104,8 +111,9 @@ def train_axis(df, axis):
 
     # class weights（正規化 + sqrt）
     counts = train_df[axis].value_counts().sort_index().values.astype(float)
-    weights = (1.0 / np.sqrt(counts))
-    weights = weights / weights.sum()          # normalize
+    freq=counts/counts.sum()
+    weights=1.0/freq
+    weights = weights / weights.mean()          # normalize
     weights = torch.tensor(weights, dtype=torch.float)
 
     # tokenizer
@@ -136,6 +144,10 @@ def train_axis(df, axis):
         logging_steps=100,
         save_steps=999999,
         report_to="none",
+        #evaluation_strategy="epoch",
+        #load_best_model_at_end=True,
+        #metric_for_best_model="f1_macro",
+        #greater_is_better=True,
     )
 
     trainer = CustomTrainer(
@@ -145,10 +157,13 @@ def train_axis(df, axis):
         train_dataset=train_ds,
         eval_dataset=test_ds,
         data_collator=collator,
+        compute_metrics=compute_metrics,
     )
 
     # train
     trainer.train()
+    eval_result=trainer.evaluate()
+    print(axis,"evaluation:",eval_result)
         # --------------------------
     # Training finished, extract logs for plotting
     # --------------------------
