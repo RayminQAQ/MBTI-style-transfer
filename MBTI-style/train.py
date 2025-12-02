@@ -662,37 +662,156 @@ Transform the following neutral text to sound like an {mbti_type} personality:
     return response
 
 
+# ==================== 預設配置 ====================
+
+# 小型訓練配置（Colab T4 16GB）
+SMALL_CONFIG = {
+    "model_name": "Qwen/Qwen2.5-1.5B-Instruct",
+    "max_seq_length": 512,
+    "compute_dtype": "float16",
+    "attn_implementation": "eager",
+    "lora_r": 16,
+    "lora_alpha": 32,
+    "epochs": 1,
+    "batch_size": 2,
+    "grad_accum": 8,
+    "fp16": True,
+    "bf16": False,
+    "max_samples": 5000,
+    "logging_steps": 5,
+    "save_steps": 100,
+    "eval_steps": 100,
+}
+
+# 大型訓練配置（A100/H100）
+LARGE_CONFIG = {
+    "model_name": "Qwen/Qwen2.5-3B-Instruct",
+    "max_seq_length": 1024,
+    "compute_dtype": "bfloat16",
+    "attn_implementation": "sdpa",
+    "lora_r": 64,
+    "lora_alpha": 128,
+    "epochs": 3,
+    "batch_size": 4,
+    "grad_accum": 4,
+    "fp16": False,
+    "bf16": True,
+    "max_samples": None,
+    "logging_steps": 10,
+    "save_steps": 200,
+    "eval_steps": 200,
+}
+
+
 # ==================== 主程式 ====================
 
 if __name__ == "__main__":
     import argparse
     
-    parser = argparse.ArgumentParser(description="MBTI Style Transfer QLoRA Training")
-    parser.add_argument("--mode", type=str, default="train", choices=["train", "inference"])
-    parser.add_argument("--model", type=str, default="Qwen/Qwen2.5-3B-Instruct")
-    parser.add_argument("--output_dir", type=str, default="./mbti_lora_output")
-    parser.add_argument("--epochs", type=int, default=3)
-    parser.add_argument("--batch_size", type=int, default=4)
-    parser.add_argument("--lora_r", type=int, default=64)
-    parser.add_argument("--max_samples", type=int, default=None)
+    parser = argparse.ArgumentParser(
+        description="MBTI Style Transfer QLoRA Training",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""
+Examples:
+  # 小型訓練（Colab T4）
+  python train.py --mode train --size small
+
+  # 大型訓練（A100/H100）
+  python train.py --mode train --size large
+
+  # 自訂參數（覆蓋預設）
+  python train.py --mode train --size small --epochs 2 --max_samples 10000
+
+  # 推理
+  python train.py --mode inference --adapter_path ./mbti_lora_output/final --text "Hello world" --mbti INFJ
+        """
+    )
+    
+    # 基本參數
+    parser.add_argument("--mode", type=str, default="train", choices=["train", "inference"],
+                        help="運行模式: train 或 inference")
+    parser.add_argument("--size", type=str, default="small", choices=["small", "large"],
+                        help="配置大小: small (Colab T4) 或 large (A100/H100)")
+    
+    # 可覆蓋的訓練參數
+    parser.add_argument("--model", type=str, default=None,
+                        help="模型名稱（覆蓋預設）")
+    parser.add_argument("--output_dir", type=str, default="./mbti_lora_output",
+                        help="輸出目錄")
+    parser.add_argument("--epochs", type=int, default=None,
+                        help="訓練輪數（覆蓋預設）")
+    parser.add_argument("--batch_size", type=int, default=None,
+                        help="Batch size（覆蓋預設）")
+    parser.add_argument("--lora_r", type=int, default=None,
+                        help="LoRA rank（覆蓋預設）")
+    parser.add_argument("--max_samples", type=int, default=None,
+                        help="最大樣本數（覆蓋預設，-1 表示全部）")
+    parser.add_argument("--learning_rate", type=float, default=None,
+                        help="學習率（覆蓋預設）")
     
     # 推理參數
-    parser.add_argument("--adapter_path", type=str, default=None)
-    parser.add_argument("--text", type=str, default=None)
-    parser.add_argument("--mbti", type=str, default="INTJ")
+    parser.add_argument("--adapter_path", type=str, default=None,
+                        help="LoRA adapter 路徑（推理用）")
+    parser.add_argument("--text", type=str, default=None,
+                        help="輸入文本（推理用）")
+    parser.add_argument("--mbti", type=str, default="INTJ",
+                        help="目標 MBTI 類型（推理用）")
     
     args = parser.parse_args()
     
     if args.mode == "train":
-        # 配置
-        model_config = ModelConfig(model_name=args.model)
-        lora_config = LoraConfigParams(r=args.lora_r, lora_alpha=args.lora_r * 2)
+        # 選擇基礎配置
+        base_config = SMALL_CONFIG if args.size == "small" else LARGE_CONFIG
+        
+        print("=" * 60)
+        print(f"Training Configuration: {args.size.upper()}")
+        print("=" * 60)
+        
+        # 構建 ModelConfig（支援覆蓋）
+        model_config = ModelConfig(
+            model_name=args.model or base_config["model_name"],
+            max_seq_length=base_config["max_seq_length"],
+            bnb_4bit_compute_dtype=base_config["compute_dtype"],
+            attn_implementation=base_config["attn_implementation"],
+        )
+        
+        # 構建 LoraConfig（支援覆蓋）
+        lora_r = args.lora_r or base_config["lora_r"]
+        lora_config = LoraConfigParams(
+            r=lora_r,
+            lora_alpha=lora_r * 2 if args.lora_r else base_config["lora_alpha"],
+        )
+        
+        # 構建 TrainConfig（支援覆蓋）
         train_config = TrainConfig(
             output_dir=args.output_dir,
-            num_train_epochs=args.epochs,
-            per_device_train_batch_size=args.batch_size,
+            num_train_epochs=args.epochs or base_config["epochs"],
+            per_device_train_batch_size=args.batch_size or base_config["batch_size"],
+            per_device_eval_batch_size=args.batch_size or base_config["batch_size"],
+            gradient_accumulation_steps=base_config["grad_accum"],
+            learning_rate=args.learning_rate or 2e-4,
+            fp16=base_config["fp16"],
+            bf16=base_config["bf16"],
+            logging_steps=base_config["logging_steps"],
+            save_steps=base_config["save_steps"],
+            eval_steps=base_config["eval_steps"],
         )
-        data_config = DataConfig(max_samples=args.max_samples)
+        
+        # 構建 DataConfig（支援覆蓋）
+        # --max_samples -1 表示使用全部資料
+        max_samples = base_config["max_samples"]
+        if args.max_samples is not None:
+            max_samples = None if args.max_samples == -1 else args.max_samples
+        data_config = DataConfig(max_samples=max_samples)
+        
+        # 印出關鍵配置
+        print(f"  Model: {model_config.model_name}")
+        print(f"  LoRA rank: {lora_config.r}")
+        print(f"  Batch size: {train_config.per_device_train_batch_size} × {train_config.gradient_accumulation_steps}")
+        print(f"  Epochs: {train_config.num_train_epochs}")
+        print(f"  Max samples: {data_config.max_samples or 'All'}")
+        print(f"  Precision: {'FP16' if train_config.fp16 else 'BF16'}")
+        print("=" * 60)
         
         # 訓練
         train(model_config, lora_config, train_config, data_config)
@@ -702,11 +821,15 @@ if __name__ == "__main__":
             print("Error: --adapter_path and --text are required for inference mode")
             exit(1)
         
+        # 選擇基礎配置（用於確定 base model）
+        base_config = SMALL_CONFIG if args.size == "small" else LARGE_CONFIG
+        base_model = args.model or base_config["model_name"]
+        
         result = inference(
             model_path=args.adapter_path,
             neutral_text=args.text,
             mbti_type=args.mbti,
-            base_model=args.model,
+            base_model=base_model,
         )
         print(f"\n[{args.mbti} Style Output]:\n{result}")
 
