@@ -38,31 +38,33 @@ load_dotenv()
 @dataclass
 class ModelConfig:
     """模型配置"""
-    # model_name: str = "Qwen/Qwen2.5-3B-Instruct"  # 或 "meta-llama/Llama-3.2-3B-Instruct"
-    model_name: str = "Qwen/Qwen2.5-1.5B"  # 或 "meta-llama/Llama-3.2-3B-Instruct"
+    model_name: str = "Qwen/Qwen2.5-3B-Instruct"  # 或 "meta-llama/Llama-3.2-3B-Instruct"
+    # model_name: str = "Qwen/Qwen2.5-1.5B"  # 或 "meta-llama/Llama-3.2-3B-Instruct"
     
-    # max_seq_length: int = 1024
-    max_seq_length: int = 512
+    max_seq_length: int = 1024
+    # max_seq_length: int = 512
 
     load_in_4bit: bool = True
     bnb_4bit_quant_type: str = "nf4"
 
-    # bnb_4bit_compute_dtype: str = "bfloat16"
-    bnb_4bit_compute_dtype: str = "float16"
+    bnb_4bit_compute_dtype: str = "bfloat16"
+    # bnb_4bit_compute_dtype: str = "float16"
 
     use_nested_quant: bool = True  # 二次量化，進一步省顯存
     
-    # attn_implementation: str = "sdpa"
-    attn_implementation: str = "eager"
+    attn_implementation: str = "sdpa"
+    # attn_implementation: str = "eager"
 
 
 @dataclass
 class LoraConfigParams:
     """LoRA 配置"""
-    # r: int = 64                    # LoRA rank (越大效果越好，但顯存越多)
-    r: int = 16                    # LoRA rank (越大效果越好，但顯存越多)
-    # lora_alpha: int = 128          # LoRA alpha (通常設為 2*r)
-    lora_alpha: int = 32          # LoRA alpha (通常設為 2*r)
+    r: int = 64                    # LoRA rank (越大效果越好，但顯存越多)
+    # r: int = 16                    
+
+    lora_alpha: int = 128          # LoRA alpha (通常設為 2*r)
+    # lora_alpha: int = 32         
+
     lora_dropout: float = 0.05
     target_modules: List[str] = field(default_factory=lambda: [
         "q_proj", "k_proj", "v_proj", "o_proj",  # Attention
@@ -77,33 +79,36 @@ class TrainConfig:
     """訓練配置"""
     output_dir: str = "./mbti_lora_output"
 
-    # num_train_epochs: int = 3
-    num_train_epochs: int = 1
+    num_train_epochs: int = 3
+    # num_train_epochs: int = 1
 
-    # per_device_train_batch_size: int = 4
-    # per_device_eval_batch_size: int = 4
-    # gradient_accumulation_steps: int = 4  # 有效 batch size = 4 * 4 = 16
-    per_device_train_batch_size: int = 2
-    per_device_eval_batch_size: int = 2
-    gradient_accumulation_steps: int = 8  # 有效 batch size = 4 * 4 = 16
+    per_device_train_batch_size: int = 4
+    per_device_eval_batch_size: int = 4
+    gradient_accumulation_steps: int = 4  # 有效 batch size = 4 * 4 = 16
+    # per_device_train_batch_size: int = 2
+    # per_device_eval_batch_size: int = 2
+    # gradient_accumulation_steps: int = 8 
 
     learning_rate: float = 2e-4
     weight_decay: float = 0.01
     warmup_ratio: float = 0.03
     lr_scheduler_type: str = "cosine"
-    # logging_steps: int = 10
-    logging_steps: int = 5
 
-    # save_steps: int = 200
-    # eval_steps: int = 200
-    save_steps: int = 100
-    eval_steps: int = 100
+    logging_steps: int = 10
+    # logging_steps: int = 5
+
+    save_steps: int = 200
+    eval_steps: int = 200
+    # save_steps: int = 100
+    # eval_steps: int = 100
 
     save_total_limit: int = 3
-    # fp16: bool = False
-    # bf16: bool = True              # 使用 bfloat16 (需要 Ampere+ GPU)
-    fp16: bool = True
-    bf16: bool = False              # 使用 bfloat16 (需要 Ampere+ GPU)
+
+    fp16: bool = False
+    bf16: bool = True              # 使用 bfloat16 (需要 Ampere+ GPU)
+    # fp16: bool = True
+    # bf16: bool = False             
+
     gradient_checkpointing: bool = True
     optim: str = "paged_adamw_8bit"
     max_grad_norm: float = 0.3
