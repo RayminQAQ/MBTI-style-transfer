@@ -121,9 +121,17 @@ class TrainConfig:
 class DataConfig:
     """資料配置"""
     data_path: str = "./mbti_1_neutral.csv"
-    # progress_path: str = "../data/mbti_1_progress.jsonl"
     train_split: float = 0.95
     max_samples: Optional[int] = None  # None = 使用全部資料
+    
+    # MBTI 類型過濾器
+    # 只訓練 E/I + T/F 的 4 種組合（忽略 S/N 和 J/P）
+    # 設為 None 表示使用全部 16 種類型
+    mbti_filter: Optional[List[str]] = None
+    
+    # 是否將 16 種類型合併為 4 種（E/I + T/F）
+    # 例如：ENTJ, ENTP, ESTJ, ESTP → ET
+    merge_to_4_types: bool = True
 
 
 # ==================== 資料處理 ====================
@@ -131,18 +139,62 @@ class DataConfig:
 # 以便精確計算 Input/Output 分界點，實現正確的 Label Masking
 
 
+def get_ei_tf_type(mbti_type: str) -> str:
+    """
+    將 16 種 MBTI 類型合併為 4 種（E/I + T/F）
+    例如：ENTJ, ENTP, ESTJ, ESTP → ET
+          INFJ, INFP, ISFJ, ISFP → IF
+    """
+    ei = mbti_type[0]  # E 或 I
+    tf = mbti_type[2]  # T 或 F
+    return f"{ei}{tf}"
+
+
 def load_and_prepare_data(config: DataConfig) -> tuple[Dataset, Dataset]:
     """載入並準備訓練資料"""
     print("Loading data...")
+    
+    # E/I + T/F 的 4 種類型對應的原始 MBTI 類型
+    EI_TF_MAPPING = {
+        "ET": ["ENTJ", "ENTP", "ESTJ", "ESTP"],  # Extroverted Thinking
+        "EF": ["ENFJ", "ENFP", "ESFJ", "ESFP"],  # Extroverted Feeling
+        "IT": ["INTJ", "INTP", "ISTJ", "ISTP"],  # Introverted Thinking
+        "IF": ["INFJ", "INFP", "ISFJ", "ISFP"],  # Introverted Feeling
+    }
+    
+    # 如果啟用合併，只保留這些類型
+    if config.merge_to_4_types:
+        allowed_types = set()
+        for types in EI_TF_MAPPING.values():
+            allowed_types.update(types)
+        print(f"Merging 16 MBTI types to 4 types (E/I + T/F): ET, EF, IT, IF")
+    elif config.mbti_filter:
+        allowed_types = set(config.mbti_filter)
+        print(f"Filtering to specific types: {config.mbti_filter}")
+    else:
+        allowed_types = None  # 不過濾
+        print("Using all 16 MBTI types")
 
     # Load from Hugging Face
     dataset = datasets.load_dataset("Binga288/mbti_style_transfer")
     
     # 展開成 post-level 訓練資料
     training_samples = []
+    type_counts = {}
     
     for row in dataset['train']:
-        mbti_type = row['type']
+        original_mbti = row['type']
+        
+        # 類型過濾
+        if allowed_types and original_mbti not in allowed_types:
+            continue
+        
+        # 決定使用的 label（合併或原始）
+        if config.merge_to_4_types:
+            mbti_type = get_ei_tf_type(original_mbti)
+        else:
+            mbti_type = original_mbti
+        
         original_posts = row['original_posts'].split('|||')
         neutral_posts = row['neutral_posts'].split('|||')
         
@@ -167,8 +219,12 @@ def load_and_prepare_data(config: DataConfig) -> tuple[Dataset, Dataset]:
                 'neutral_text': neutral_text,
                 'styled_text': original_post,
             })
+            
+            # 統計各類型數量
+            type_counts[mbti_type] = type_counts.get(mbti_type, 0) + 1
     
     print(f"Total training samples: {len(training_samples)}")
+    print(f"Type distribution: {type_counts}")
     
     # 限制樣本數
     if config.max_samples:
@@ -693,22 +749,62 @@ SMALL_CONFIG = {
 }
 
 # 大型訓練配置（A100/H100）
+# LARGE_CONFIG = {
+#     "model_name": "Qwen/Qwen2.5-3B-Instruct",
+#     "max_seq_length": 1024,
+#     "compute_dtype": "bfloat16",
+#     "attn_implementation": "sdpa",
+#     "lora_r": 64,
+#     "lora_alpha": 128,
+#     "epochs": 3,
+#     "batch_size": 4,
+#     "grad_accum": 4,
+#     "fp16": False,
+#     "bf16": True,
+#     "max_samples": None,
+#     "logging_steps": 10,
+#     "save_steps": 200,
+#     "eval_steps": 200,
+# }
+
+# 速度與品質平衡配置（針對 RTX 5090 / A100，目標：10-15小時內完成）
+# 極速訓練配置（針對 RTX 5090 / A100，目標：2-4小時內完成）
 LARGE_CONFIG = {
-    "model_name": "Qwen/Qwen2.5-3B-Instruct",
-    "max_seq_length": 1024,
+    # 改用 7B，目前速度與效果的 CP 值之王，適合快速迭代實驗
+    "model_name": "Qwen/Qwen2.5-7B-Instruct", 
+    
+    # 序列長度
+    "max_seq_length": 2048,
+    
+    # 必開 bfloat16
     "compute_dtype": "bfloat16",
-    "attn_implementation": "sdpa",
+    
+    # 強烈建議安裝 flash-attn (pip install flash-attn)
+    "attn_implementation": "flash_attention_2", 
+    # 如果沒裝 flash-attn，請改回 "sdpa"
+    # "attn_implementation": "sdpa",
+    
+    # LoRA Rank 維持 64，7B 模型容量較小，高 Rank 有助於記住風格細節
     "lora_r": 64,
     "lora_alpha": 128,
+    
     "epochs": 3,
-    "batch_size": 4,
-    "grad_accum": 4,
+    
+    # 關鍵調整：7B 模型很小，我們可以把單卡 Batch Size 拉大
+    # 這能大幅提升訓練速度 (Throughput)
+    "batch_size": 16,  # 單卡一次處理 32 筆 (5090/A100 絕對吃得下)
+    "grad_accum": 2,   # 16 * 2 = 32 (Effective Batch Size)
+    
     "fp16": False,
     "bf16": True,
+    
     "max_samples": None,
+    
     "logging_steps": 10,
-    "save_steps": 200,
-    "eval_steps": 200,
+    
+    # 因為訓練速度極快，step 數會變少，建議調整儲存頻率
+    "save_steps": 5000,
+    "eval_steps": 5000,
 }
 
 
@@ -722,17 +818,20 @@ if __name__ == "__main__":
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
-  # 小型訓練（Colab T4）
+  # 小型訓練 - 4 種類型 (ET/EF/IT/IF)（預設）
   python train.py --mode train --size small
 
-  # 大型訓練（A100/H100）
+  # 大型訓練 - 4 種類型
   python train.py --mode train --size large
 
-  # 自訂參數（覆蓋預設）
-  python train.py --mode train --size small --epochs 2 --max_samples 10000
+  # 使用原始 16 種 MBTI 類型
+  python train.py --mode train --size small --no-merge-types
 
-  # 推理
-  python train.py --mode inference --adapter_path ./mbti_lora_output/final --text "Hello world" --mbti INFJ
+  # 只訓練特定類型
+  python train.py --mode train --size small --no-merge-types --mbti-filter INTJ INFJ ENTJ ENFJ
+
+  # 推理（使用 4 種類型時）
+  python train.py --mode inference --adapter_path ./mbti_lora_output/final --text "Hello world" --mbti ET
         """
     )
     
@@ -757,6 +856,14 @@ Examples:
                         help="最大樣本數（覆蓋預設，-1 表示全部）")
     parser.add_argument("--learning_rate", type=float, default=None,
                         help="學習率（覆蓋預設）")
+    
+    # MBTI 類型過濾參數
+    parser.add_argument("--merge-types", action="store_true", default=True,
+                        help="將 16 種 MBTI 合併為 4 種 (ET/EF/IT/IF)，預設開啟")
+    parser.add_argument("--no-merge-types", dest="merge_types", action="store_false",
+                        help="使用原始 16 種 MBTI 類型")
+    parser.add_argument("--mbti-filter", type=str, nargs="+", default=None,
+                        help="只訓練特定 MBTI 類型，例如: --mbti-filter INTJ INFJ ENTJ")
     
     # 推理參數
     parser.add_argument("--adapter_path", type=str, default=None,
@@ -811,11 +918,16 @@ Examples:
         max_samples = base_config["max_samples"]
         if args.max_samples is not None:
             max_samples = None if args.max_samples == -1 else args.max_samples
-        data_config = DataConfig(max_samples=max_samples)
+        data_config = DataConfig(
+            max_samples=max_samples,
+            merge_to_4_types=args.merge_types,
+            mbti_filter=args.mbti_filter,
+        )
         
         # 印出關鍵配置
         print(f"  Model: {model_config.model_name}")
         print(f"  LoRA rank: {lora_config.r}")
+        print(f"  MBTI types: {'4 types (ET/EF/IT/IF)' if data_config.merge_to_4_types else '16 types'}")
         print(f"  Batch size: {train_config.per_device_train_batch_size} × {train_config.gradient_accumulation_steps}")
         print(f"  Epochs: {train_config.num_train_epochs}")
         print(f"  Max samples: {data_config.max_samples or 'All'}")
