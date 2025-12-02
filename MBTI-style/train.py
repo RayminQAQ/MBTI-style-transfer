@@ -30,6 +30,7 @@ from peft import (
 )
 import evaluate
 from dotenv import load_dotenv
+import datasets
 
 load_dotenv()
 
@@ -126,67 +127,39 @@ class DataConfig:
 
 
 # ==================== 資料處理 ====================
-
-PROMPT_TEMPLATE = """<|im_start|>system
-You are a text style transfer assistant. Transform neutral text into text that reflects a specific MBTI personality type's writing style.<|im_end|>
-<|im_start|>user
-Transform the following neutral text to sound like an {mbti_type} personality:
-
-{neutral_text}<|im_end|>
-<|im_start|>assistant
-{styled_text}<|im_end|>"""
-
-# Llama 格式 (備用)
-LLAMA_PROMPT_TEMPLATE = """<|begin_of_text|><|start_header_id|>system<|end_header_id|>
-You are a text style transfer assistant. Transform neutral text into text that reflects a specific MBTI personality type's writing style.<|eot_id|><|start_header_id|>user<|end_header_id|>
-Transform the following neutral text to sound like an {mbti_type} personality:
-
-{neutral_text}<|eot_id|><|start_header_id|>assistant<|end_header_id|>
-{styled_text}<|eot_id|>"""
+# 注意：Prompt 模板現在在 format_prompt() 函數內部構建
+# 以便精確計算 Input/Output 分界點，實現正確的 Label Masking
 
 
 def load_and_prepare_data(config: DataConfig) -> tuple[Dataset, Dataset]:
     """載入並準備訓練資料"""
     print("Loading data...")
-    
-    # 載入進度檔（包含 post-level 的 neutral text）
-    # progress = {}
-    # if os.path.exists(config.progress_path):
-    #     with open(config.progress_path, 'r', encoding='utf-8') as f:
-    #         for line in f:
-    #             try:
-    #                 record = json.loads(line.strip())
-    #                 progress[record['post_id']] = record['neutral_text']
-    #             except:
-    #                 continue
-    
-    # 載入原始資料
-    df = pd.read_csv(config.data_path)
+
+    # Load from Hugging Face
+    dataset = datasets.load_dataset("Binga288/mbti_style_transfer")
     
     # 展開成 post-level 訓練資料
     training_samples = []
     
-    for _, row in df.iterrows():
-        person_id = row['id']
+    for row in dataset['train']:
         mbti_type = row['type']
         original_posts = row['original_posts'].split('|||')
         neutral_posts = row['neutral_posts'].split('|||')
         
-        for post_idx, original_post in enumerate(original_posts):
-            post_id = f"{person_id}_{post_idx}"
+        for original_post, neutral_text in zip(original_posts, neutral_posts):
             original_post = original_post.strip()
+            neutral_text = neutral_text.strip()
             
             # 過濾太短或 URL
             if len(original_post) < 30 or original_post.startswith('http'):
                 continue
             
-            # 獲取 neutral text
-            neutral_text = neutral_posts[post_idx]
-            if neutral_text is None or len(neutral_text) < 20:
+            # 過濾 neutral text 太短
+            if len(neutral_text) < 20:
                 continue
             
             # 過濾 neutral 和 original 幾乎相同的情況
-            if neutral_text.strip() == original_post.strip():
+            if neutral_text == original_post:
                 continue
             
             training_samples.append({
@@ -213,32 +186,68 @@ def load_and_prepare_data(config: DataConfig) -> tuple[Dataset, Dataset]:
 
 
 def format_prompt(sample: dict, tokenizer, max_length: int) -> dict:
-    """格式化成訓練 prompt"""
-    # 根據 tokenizer 選擇模板
-    if "qwen" in tokenizer.name_or_path.lower():
-        template = PROMPT_TEMPLATE
-    else:
-        template = LLAMA_PROMPT_TEMPLATE
+    """
+    格式化成訓練 prompt 並進行 Instruction Masking
     
-    full_prompt = template.format(
-        mbti_type=sample['mbti_type'],
-        neutral_text=sample['neutral_text'],
-        styled_text=sample['styled_text'],
+    關鍵：只對 Assistant 的輸出部分計算 Loss
+    System + User 部分的 labels 設為 -100（不計算 loss）
+    """
+    mbti_type = sample['mbti_type']
+    neutral_text = sample['neutral_text']
+    styled_text = sample['styled_text']
+    
+    # 根據 tokenizer 選擇格式
+    if "qwen" in tokenizer.name_or_path.lower():
+        # Qwen (ChatML) 格式
+        # 構建 "Input Part" (不含回應的部分)
+        system_part = "<|im_start|>system\nYou are a text style transfer assistant. Transform neutral text into text that reflects a specific MBTI personality type's writing style.<|im_end|>\n"
+        user_part = f"<|im_start|>user\nTransform the following neutral text to sound like an {mbti_type} personality:\n\n{neutral_text}<|im_end|>\n<|im_start|>assistant\n"
+        
+        input_text = system_part + user_part
+        full_text = input_text + styled_text + "<|im_end|>"
+    else:
+        # Llama 3 格式
+        input_text = f"<|begin_of_text|><|start_header_id|>system<|end_header_id|>\nYou are a text style transfer assistant. Transform neutral text into text that reflects a specific MBTI personality type's writing style.<|eot_id|><|start_header_id|>user<|end_header_id|>\nTransform the following neutral text to sound like an {mbti_type} personality:\n\n{neutral_text}<|eot_id|><|start_header_id|>assistant<|end_header_id|>\n"
+        full_text = input_text + styled_text + "<|eot_id|>"
+    
+    # Tokenize "Input Part" 來獲取長度（用於 masking）
+    input_tokenized = tokenizer(
+        input_text,
+        add_special_tokens=False,
     )
     
-    # Tokenize
-    tokenized = tokenizer(
-        full_prompt,
+    # Tokenize 完整文本
+    full_tokenized = tokenizer(
+        full_text,
         truncation=True,
         max_length=max_length,
         padding=False,
-        return_tensors=None,
+        add_special_tokens=False,
     )
     
-    # 設置 labels (用於計算 loss)
-    tokenized["labels"] = tokenized["input_ids"].copy()
+    input_ids = full_tokenized["input_ids"]
+    attention_mask = full_tokenized["attention_mask"]
+    labels = list(input_ids)  # Copy
     
-    return tokenized
+    # ========== 關鍵步驟：Instruction Masking ==========
+    # 將 Input 部分（System + User）的 Label 設為 -100（不計算 loss）
+    input_len = len(input_tokenized["input_ids"])
+    
+    if input_len < len(labels):
+        # 正常情況：mask 掉 input 部分
+        for i in range(input_len):
+            labels[i] = -100
+    else:
+        # Edge Case: Input 超過 max_length，整個序列都被截斷
+        # 這筆資料無效（沒有 output 部分），全部 mask
+        for i in range(len(labels)):
+            labels[i] = -100
+    
+    return {
+        "input_ids": input_ids,
+        "attention_mask": attention_mask,
+        "labels": labels,
+    }
 
 
 # ==================== 模型載入 ====================
