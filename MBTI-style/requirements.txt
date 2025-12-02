@@ -1,0 +1,29 @@
+# MBTI Style Transfer - Training Requirements
+# pip install -r requirements.txt
+
+# Core
+torch>=2.1.0
+transformers>=4.40.0
+datasets>=2.18.0
+accelerate>=0.27.0
+
+# QLoRA
+peft>=0.10.0
+bitsandbytes>=0.43.0
+
+# Utilities
+pandas>=2.0.0
+python-dotenv>=1.0.0
+tqdm>=4.66.0
+
+# Evaluation
+evaluate>=0.4.0
+rouge_score>=0.1.2
+nltk>=3.8.0
+
+# Monitoring
+tensorboard>=2.16.0
+
+# Optional: Flash Attention 2 (需要從源碼編譯)
+# pip install flash-attn --no-build-isolation
+
