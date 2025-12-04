@@ -175,68 +175,70 @@ def load_and_prepare_data(config: DataConfig) -> tuple[Dataset, Dataset]:
         allowed_types = None  # 不過濾
         print("Using all 16 MBTI types")
 
-    # Load from Hugging Face
+    # Load from Hugging Face (train and test splits)
     dataset = datasets.load_dataset("Binga288/mbti_style_transfer")
     
-    # 展開成 post-level 訓練資料
-    training_samples = []
-    type_counts = {}
-    
-    for row in dataset['train']:
-        original_mbti = row['type']
+    def process_split(split_data):
+        """處理單個 split 的資料"""
+        samples = []
+        type_counts = {}
         
-        # 類型過濾
-        if allowed_types and original_mbti not in allowed_types:
-            continue
-        
-        # 決定使用的 label（合併或原始）
-        if config.merge_to_4_types:
-            mbti_type = get_ei_tf_type(original_mbti)
-        else:
-            mbti_type = original_mbti
-        
-        original_posts = row['original_posts'].split('|||')
-        neutral_posts = row['neutral_posts'].split('|||')
-        
-        for original_post, neutral_text in zip(original_posts, neutral_posts):
-            original_post = original_post.strip()
-            neutral_text = neutral_text.strip()
+        for row in split_data:
+            original_mbti = row['type']
             
-            # 過濾太短或 URL
-            if len(original_post) < 30 or original_post.startswith('http'):
+            # 類型過濾
+            if allowed_types and original_mbti not in allowed_types:
                 continue
             
-            # 過濾 neutral text 太短
-            if len(neutral_text) < 20:
-                continue
+            # 決定使用的 label（合併或原始）
+            if config.merge_to_4_types:
+                mbti_type = get_ei_tf_type(original_mbti)
+            else:
+                mbti_type = original_mbti
             
-            # 過濾 neutral 和 original 幾乎相同的情況
-            if neutral_text == original_post:
-                continue
+            original_posts = row['original_posts'].split('|||')
+            neutral_posts = row['neutral_posts'].split('|||')
             
-            training_samples.append({
-                'mbti_type': mbti_type,
-                'neutral_text': neutral_text,
-                'styled_text': original_post,
-            })
-            
-            # 統計各類型數量
-            type_counts[mbti_type] = type_counts.get(mbti_type, 0) + 1
+            for original_post, neutral_text in zip(original_posts, neutral_posts):
+                original_post = original_post.strip()
+                neutral_text = neutral_text.strip()
+                
+                # 過濾太短或 URL
+                if len(original_post) < 30 or original_post.startswith('http'):
+                    continue
+                
+                # 過濾 neutral text 太短
+                if len(neutral_text) < 20:
+                    continue
+                
+                # 過濾 neutral 和 original 幾乎相同的情況
+                if neutral_text == original_post:
+                    continue
+                
+                samples.append({
+                    'mbti_type': mbti_type,
+                    'neutral_text': neutral_text,
+                    'styled_text': original_post,
+                })
+                
+                # 統計各類型數量
+                type_counts[mbti_type] = type_counts.get(mbti_type, 0) + 1
+        
+        return samples, type_counts
     
-    print(f"Total training samples: {len(training_samples)}")
-    print(f"Type distribution: {type_counts}")
+    # 處理 train 和 test splits
+    train_samples, train_type_counts = process_split(dataset['train'])
+    eval_samples, eval_type_counts = process_split(dataset['test'])
     
-    # 限制樣本數
+    print(f"Train samples: {len(train_samples)}")
+    print(f"Train type distribution: {train_type_counts}")
+    print(f"Eval samples: {len(eval_samples)}")
+    print(f"Eval type distribution: {eval_type_counts}")
+    
+    # 限制樣本數（僅限制 train）
     if config.max_samples:
-        training_samples = training_samples[:config.max_samples]
-        print(f"Limited to {config.max_samples} samples")
-    
-    # 分割訓練/驗證集
-    split_idx = int(len(training_samples) * config.train_split)
-    train_samples = training_samples[:split_idx]
-    eval_samples = training_samples[split_idx:]
-    
-    print(f"Train samples: {len(train_samples)}, Eval samples: {len(eval_samples)}")
+        train_samples = train_samples[:config.max_samples]
+        print(f"Train limited to {config.max_samples} samples")
     
     return Dataset.from_list(train_samples), Dataset.from_list(eval_samples)
 
