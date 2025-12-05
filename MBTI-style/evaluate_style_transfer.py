@@ -14,6 +14,10 @@ from huggingface_hub import snapshot_download
 from peft import PeftModel
 import json
 from datetime import datetime
+import logging
+
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+logger = logging.getLogger(__name__)
 
 # ==================== Classifier 相關 ====================
 CLASSIFIER_REPO_ID = "Owen12354/mbti_classifier"
@@ -279,6 +283,7 @@ def evaluate(
         try:
             # Style Transfer
             transferred_text = transfer_model.transfer(neutral_text, target)
+            logger.info(f"Transferred text: {transferred_text[:200]}...")
             
             # Classifier 預測 (永遠返回 4 字母)
             predicted_mbti, confidence, axis_detail = classifier.predict(transferred_text)
