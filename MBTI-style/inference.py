@@ -1,8 +1,64 @@
 import torch
-from transformers import AutoTokenizer, AutoModelForSequenceClassification
-from huggingface_hub import snapshot_download
+from transformers import AutoTokenizer, AutoModelForCausalLM, BitsAndBytesConfig
+from dataclasses import dataclass
 
+@dataclass
+class ModelConfig:
+    """模型配置"""
+    model_name: str = "Qwen/Qwen2.5-3B-Instruct"  # 或 "meta-llama/Llama-3.2-3B-Instruct"
+    # model_name: str = "Qwen/Qwen2.5-1.5B"  # 或 "meta-llama/Llama-3.2-3B-Instruct"
+    
+    max_seq_length: int = 1024
+    # max_seq_length: int = 512
 
+    load_in_4bit: bool = True
+    bnb_4bit_quant_type: str = "nf4"
+
+    bnb_4bit_compute_dtype: str = "bfloat16"
+    # bnb_4bit_compute_dtype: str = "float16"
+
+    use_nested_quant: bool = True  # 二次量化，進一步省顯存
+    
+    attn_implementation: str = "sdpa"
+    # attn_implementation: str = "eager"
+
+def load_model_and_tokenizer(model_config: ModelConfig):
+    """載入量化模型和 tokenizer"""
+    print(f"Loading model: {model_config.model_name}")
+    
+    # BitsAndBytes 配置
+    compute_dtype = getattr(torch, model_config.bnb_4bit_compute_dtype)
+    
+    bnb_config = BitsAndBytesConfig(
+        load_in_4bit=model_config.load_in_4bit,
+        bnb_4bit_quant_type=model_config.bnb_4bit_quant_type,
+        bnb_4bit_compute_dtype=compute_dtype,
+        bnb_4bit_use_double_quant=model_config.use_nested_quant,
+    )
+    
+    # 載入模型
+    model = AutoModelForCausalLM.from_pretrained(
+        model_config.model_name,
+        quantization_config=bnb_config,
+        device_map="auto",
+        trust_remote_code=True,
+        torch_dtype=compute_dtype,
+        attn_implementation=model_config.attn_implementation,
+    )
+    
+    # 載入 tokenizer
+    tokenizer = AutoTokenizer.from_pretrained(
+        model_config.model_name,
+        trust_remote_code=True,
+        padding_side="right",
+    )
+    
+    # 設置 pad token
+    if tokenizer.pad_token is None:
+        tokenizer.pad_token = tokenizer.eos_token
+        model.config.pad_token_id = tokenizer.eos_token_id
+    
+    return model, tokenizer
 
 def inference(
     model_path: str,
@@ -43,9 +99,15 @@ def inference(
             pad_token_id=tokenizer.pad_token_id,
         )
     
-    response = tokenizer.decode(outputs[0], skip_special_tokens=True)
+    # 先保留 special tokens 以便正確分割
+    response = tokenizer.decode(outputs[0], skip_special_tokens=False)
+    print(f"Response: {response}")
+
     # 提取 assistant 回應
-    response = response.split("<|im_start|>assistant")[-1].strip()
+    if "<|im_start|>assistant" in response:
+        response = response.split("<|im_start|>assistant")[-1]
+    # 移除結尾的 <|im_end|> 和其他 special tokens
+    response = response.replace("<|im_end|>", "").replace("<|endoftext|>", "").strip()
     
     return response
 
@@ -97,7 +159,7 @@ if __name__ == "__main__":
         epilog="""
     Examples:
     # 推理（使用 4 種類型時）
-    python train.py --mode inference --adapter_path ./mbti_lora_output/final --text "Hello world" --mbti ET
+    python inference.py --adapter_path ./mbti_lora_output/final --text "Hello world" --mbti ET
         """
     )
 
@@ -118,8 +180,7 @@ if __name__ == "__main__":
         exit(1)
     
     # 選擇基礎配置（用於確定 base model）
-    base_config = CONFIG["model_name"]
-    base_model = args.model or base_config["model_name"]
+    base_model = args.model or CONFIG["model_name"]
     
     result = inference(
         model_path=args.adapter_path,
