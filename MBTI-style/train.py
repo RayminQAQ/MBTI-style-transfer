@@ -720,9 +720,15 @@ Transform the following neutral text to sound like an {mbti_type} personality:
             pad_token_id=tokenizer.pad_token_id,
         )
     
-    response = tokenizer.decode(outputs[0], skip_special_tokens=True)
+    # 先保留 special tokens 以便正確分割
+    response = tokenizer.decode(outputs[0], skip_special_tokens=False)
     # 提取 assistant 回應
-    response = response.split("<|im_start|>assistant")[-1].strip()
+    if "<|im_start|>assistant" in response:
+        response = response.split("<|im_start|>assistant")[-1]
+    # 移除結尾的 <|im_end|> 和其他 special tokens
+    response = response.replace("<|im_end|>", "").replace("<|endoftext|>", "").strip()
+
+    
     
     return response
 
