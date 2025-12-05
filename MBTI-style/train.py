@@ -164,9 +164,7 @@ def load_and_prepare_data(config: DataConfig) -> tuple[Dataset, Dataset]:
     
     # 如果啟用合併，只保留這些類型
     if config.merge_to_4_types:
-        allowed_types = set()
-        for types in EI_TF_MAPPING.values():
-            allowed_types.update(types)
+        allowed_types = None
         print(f"Merging 16 MBTI types to 4 types (E/I + T/F): ET, EF, IT, IF")
     elif config.mbti_filter:
         allowed_types = set(config.mbti_filter)
