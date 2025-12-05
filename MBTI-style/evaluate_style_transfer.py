@@ -283,6 +283,9 @@ def evaluate(
         # 決定目標 MBTI
         if target_mbti:
             target = target_mbti.upper()
+            # 若 ei_tf_only 模式但傳入 4 字元 MBTI，自動轉換成 2 字元
+            if ei_tf_only and len(target) == 4:
+                target = get_ei_tf_type(target)
         else:
             target = dataset_label.upper()
         
