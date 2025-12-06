@@ -1,7 +1,8 @@
 """
-訓練四個 BERT 模型：I/E、N/S、F/T、P/J
+訓練四個模型：I/E、N/S、F/T、P/J
+使用 microsoft/deberta-v3-base
 輸出：
-1. 四個 fine-tuned BERT 權重 .pt
+1. 四個 fine-tuned DeBERTa 權重 .pt
 2. classification report（txt）
 """
 
@@ -13,7 +14,7 @@ import torch
 import torch.nn as nn
 from datasets import Dataset
 from sklearn.model_selection import train_test_split
-from sklearn.metrics import classification_report,f1_score,accuracy_score
+from sklearn.metrics import classification_report, f1_score, accuracy_score
 import matplotlib.pyplot as plt
 from transformers import (
     AutoTokenizer,
@@ -27,11 +28,11 @@ from transformers import (
 # Config
 # ===========================
 DATA_PATH = "mbti_1.csv"
-MODEL_NAME = "bert-base-uncased"
+MODEL_NAME = "microsoft/deberta-v3-base"   # <<< 改成 DeBERTa v3
 SAVE_DIR = "./saved_models"
 MAX_LENGTH = 128
 TEST_SIZE = 0.2
-EPOCHS = 3
+EPOCHS = 6
 BATCH = 16
 LR = 2e-5
 
@@ -61,10 +62,10 @@ def load_dataset(path):
 
     df = pd.DataFrame(rows).sample(15000, random_state=42)
 
-    df["IE"] = df["type"].apply(lambda x: 0 if x[0]=="I" else 1)
-    df["NS"] = df["type"].apply(lambda x: 0 if x[1]=="N" else 1)
-    df["FT"] = df["type"].apply(lambda x: 0 if x[2]=="F" else 1)
-    df["PJ"] = df["type"].apply(lambda x: 0 if x[3]=="P" else 1)
+    df["IE"] = df["type"].apply(lambda x: 0 if x[0] == "I" else 1)
+    df["NS"] = df["type"].apply(lambda x: 0 if x[1] == "N" else 1)
+    df["FT"] = df["type"].apply(lambda x: 0 if x[2] == "F" else 1)
+    df["PJ"] = df["type"].apply(lambda x: 0 if x[3] == "P" else 1)
 
     return df
 
@@ -77,7 +78,7 @@ class CustomTrainer(Trainer):
         super().__init__(*args, **kwargs)
         self.class_weights = class_weights
 
-    def compute_loss(self, model, inputs, return_outputs=False, **kwargs):
+    def compute_loss(self, model, inputs, return_outputs=False, num_items_in_batch=None, **kwargs):
         labels = inputs["labels"]
         outputs = model(**inputs)
         logits = outputs["logits"]
@@ -91,6 +92,9 @@ class CustomTrainer(Trainer):
         return (loss, outputs) if return_outputs else loss
 
 
+# ===========================
+# Metrics
+# ===========================
 def compute_metrics(eval_pred):
     logits, labels = eval_pred
     preds = np.argmax(logits, axis=-1)
@@ -98,8 +102,10 @@ def compute_metrics(eval_pred):
         "accuracy": accuracy_score(labels, preds),
         "f1_macro": f1_score(labels, preds, average="macro"),
     }
+
+
 # ===========================
-# 單一軸訓練
+# 訓練單一軸
 # ===========================
 def train_axis(df, axis):
 
@@ -109,32 +115,31 @@ def train_axis(df, axis):
         df, test_size=TEST_SIZE, stratify=df[axis], random_state=42
     )
 
-    # class weights（正規化 + sqrt）
+    # class weights
     counts = train_df[axis].value_counts().sort_index().values.astype(float)
-    freq=counts/counts.sum()
-    weights=1.0/freq
-    weights = weights / weights.mean()          # normalize
+    freq = counts / counts.sum()
+    weights = 1.0 / freq
+    weights = weights / weights.mean()
     weights = torch.tensor(weights, dtype=torch.float)
 
     # tokenizer
-    tokenizer = AutoTokenizer.from_pretrained(MODEL_NAME)
+    tokenizer = AutoTokenizer.from_pretrained(MODEL_NAME, use_fast=False)
 
-    # dataset → HF Dataset
     def tokenize(batch):
         return tokenizer(batch["text"], truncation=True, max_length=MAX_LENGTH)
 
     train_ds = Dataset.from_pandas(train_df[["text", axis]].rename(columns={axis: "labels"}))
-    test_ds  = Dataset.from_pandas(test_df[["text", axis]].rename(columns={axis: "labels"}))
+    test_ds = Dataset.from_pandas(test_df[["text", axis]].rename(columns={axis: "labels"}))
 
     train_ds = train_ds.map(tokenize, batched=True).remove_columns(["text"])
-    test_ds  = test_ds.map(tokenize, batched=True).remove_columns(["text"])
+    test_ds = test_ds.map(tokenize, batched=True).remove_columns(["text"])
 
     collator = DataCollatorWithPadding(tokenizer)
 
     # model
     model = AutoModelForSequenceClassification.from_pretrained(MODEL_NAME, num_labels=2)
 
-    # training args
+    # TrainingArguments
     args = TrainingArguments(
         output_dir=f"{SAVE_DIR}/{axis}",
         per_device_train_batch_size=BATCH,
@@ -144,10 +149,6 @@ def train_axis(df, axis):
         logging_steps=100,
         save_steps=999999,
         report_to="none",
-        #evaluation_strategy="epoch",
-        #load_best_model_at_end=True,
-        #metric_for_best_model="f1_macro",
-        #greater_is_better=True,
     )
 
     trainer = CustomTrainer(
@@ -160,81 +161,46 @@ def train_axis(df, axis):
         compute_metrics=compute_metrics,
     )
 
-    # train
     trainer.train()
-    eval_result=trainer.evaluate()
-    print(axis,"evaluation:",eval_result)
-        # --------------------------
-    # Training finished, extract logs for plotting
-    # --------------------------
+    print(axis, "evaluation:", trainer.evaluate())
+
+    # === 儲存 loss/acc plot ===
     logs = trainer.state.log_history
-
-    train_loss = []
-    eval_acc = []
-    eval_f1 = []
-
-    for entry in logs:
-        if "loss" in entry:             # training loss
-            train_loss.append(entry["loss"])
-        if "eval_accuracy" in entry:    # eval accuracy
-            eval_acc.append(entry["eval_accuracy"])
-        if "eval_f1_macro" in entry:    # eval f1
-            eval_f1.append(entry["eval_f1_macro"])
+    train_loss = [e["loss"] for e in logs if "loss" in e]
+    eval_acc = [e["eval_accuracy"] for e in logs if "eval_accuracy" in e]
+    eval_f1 = [e["eval_f1_macro"] for e in logs if "eval_f1_macro" in e]
 
     axis_dir = f"{SAVE_DIR}/{axis}"
     os.makedirs(axis_dir, exist_ok=True)
 
-    # --------------------------
-    # Plot: Training Loss curve
-    # --------------------------
     if len(train_loss) > 1:
         plt.figure()
-        plt.plot(train_loss, label="Training Loss")
+        plt.plot(train_loss)
         plt.title(f"{axis} Training Loss")
-        plt.xlabel("Logging Step")
-        plt.ylabel("Loss")
-        plt.grid(True)
-        plt.legend()
         plt.savefig(f"{axis_dir}/{axis}_loss.png")
         plt.close()
-    else:
-        print(f"[Warning] No training loss found for {axis}")
 
-    # --------------------------
-    # Plot: Evaluation Accuracy 
-    # --------------------------
     if len(eval_acc) > 0:
         plt.figure()
-        plt.plot(eval_acc, label="Eval Accuracy", color="green")
-        plt.title(f"{axis} Evaluation Accuracy")
-        plt.xlabel("Eval Step")
-        plt.ylabel("Accuracy")
-        plt.grid(True)
-        plt.legend()
+        plt.plot(eval_acc, color="green")
+        plt.title(f"{axis} Eval Accuracy")
         plt.savefig(f"{axis_dir}/{axis}_accuracy.png")
         plt.close()
 
-    # --------------------------
-    # Plot: Evaluation F1 Score
-    # --------------------------
     if len(eval_f1) > 0:
         plt.figure()
-        plt.plot(eval_f1, label="Eval F1 Macro", color="red")
-        plt.title(f"{axis} Evaluation F1 Macro")
-        plt.xlabel("Eval Step")
-        plt.ylabel("F1 Macro")
-        plt.grid(True)
-        plt.legend()
+        plt.plot(eval_f1, color="red")
+        plt.title(f"{axis} Eval F1")
         plt.savefig(f"{axis_dir}/{axis}_f1.png")
         plt.close()
 
-    # save .pt
+    # 儲存模型
     torch.save(model.state_dict(), f"{SAVE_DIR}/{axis}/{axis}.pt")
 
-    # evaluation
-    pred = trainer.predict(test_ds)
-    y_pred = np.argmax(pred.predictions, axis=-1)
-    y_true = pred.label_ids
+    # Classification Report
+    preds = trainer.predict(test_ds)
+    y_pred = np.argmax(preds.predictions, axis=-1)
+    y_true = preds.label_ids
 
     report = classification_report(y_true, y_pred)
     print(report)
@@ -252,7 +218,7 @@ def main():
     for axis in ["IE", "NS", "FT", "PJ"]:
         train_axis(df, axis)
 
-    print("\nAll models trained & saved in saved_models/\n")
+    print("\nAll DeBERTa models trained & saved!\n")
 
 
 if __name__ == "__main__":
