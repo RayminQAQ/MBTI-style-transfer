@@ -120,8 +120,9 @@ class MBTIClassifier:
 
 class StyleTransferModel:
     """LoRA Style Transfer 模型封裝"""
-    def __init__(self, adapter_path, base_model="Qwen/Qwen2.5-7B-Instruct", device="cuda"):
+    def __init__(self, adapter_path=None, base_model="Qwen/Qwen2.5-7B-Instruct", device="cuda"):
         self.device = device
+        self.adapter_path = adapter_path
         print(f"Loading base model: {base_model}")
         
         self.tokenizer = AutoTokenizer.from_pretrained(base_model)
@@ -132,8 +133,11 @@ class StyleTransferModel:
             trust_remote_code=True,
         )
         
-        print(f"Loading LoRA adapter: {adapter_path}")
-        self.model = PeftModel.from_pretrained(self.model, adapter_path)
+        if adapter_path:
+            print(f"Loading LoRA adapter: {adapter_path}")
+            self.model = PeftModel.from_pretrained(self.model, adapter_path)
+        else:
+            print("Using base model without LoRA adapter")
         self.model.eval()
         
         if self.tokenizer.pad_token is None:
@@ -149,7 +153,43 @@ Transform the following neutral text to sound like an {mbti_type} personality:
 {neutral_text}<|im_end|>
 <|im_start|>assistant
 """
-        
+
+        if self.adapter_path is None:
+            # No LoRA 模式：使用更詳細的 prompt
+            prompt = f"""<|im_start|>system
+You are an expert text style transfer assistant. Your goal is to rewrite neutral text into a specific MBTI personality style, focusing strictly on the **Energy (E/I)** and **Nature (T/F)** dimensions.
+
+### Style Guidelines
+Analyze the target MBTI type's E/I and T/F letters to determine the tone:
+
+1. **Energy: Extraversion (E) vs. Introversion (I)**
+   * **If E (Extraverted):** Use an energetic, assertive, and engaging tone. Use direct address ("Hey team", "Listen up"), active verbs, and potentially exclamation marks. Focus on external action.
+   * **If I (Introverted):** Use a calm, reserved, and reflective tone. Use softer sentence structures, internal reasoning ("I feel", "It seems"), and maintain a thoughtful distance.
+
+2. **Nature: Thinking (T) vs. Feeling (F)**
+   * **If T (Thinking):** Focus on logic, facts, efficiency, and competence. Be objective, concise, and blunt. Avoid emotional fluff.
+   * **If F (Feeling):** Focus on values, harmony, empathy, and people. Use emotional keywords ("appreciate", "feel", "care") and a warm, supportive tone.
+
+### One-Shot Example
+**Neutral Text:** "The report contains errors. Please correct them and resubmit."
+
+**Target MBTI:** ESTJ (Extraverted + Thinking focus)
+*Analysis:* Needs to be direct/commanding (E) and focused on the error/solution without sugar-coating (T).
+**Transformed Text:** "Attention! I've spotted errors in the report. This needs to be fixed immediately to ensure accuracy. Correct it and resubmit ASAP."
+
+---
+**Target MBTI:** INFP (Introverted + Feeling focus)
+*Analysis:* Needs to be gentle/reflective (I) and focused on how the feedback is received/growth (F).
+**Transformed Text:** "I spent some time reading the report and noticed a few things that might need looking at. Maybe we could gently revise those parts? Take your time to make it feel right."
+
+### Task
+Transform the user's neutral text to match the E/I and T/F traits of the target MBTI type. Output ONLY the transformed text, nothing else.<|im_end|>
+<|im_start|>user
+Target MBTI: {mbti_type}
+Neutral Text: {neutral_text}<|im_end|>
+<|im_start|>assistant
+"""
+
         inputs = self.tokenizer(prompt, return_tensors="pt").to(self.model.device)
         
         with torch.no_grad():
@@ -177,7 +217,7 @@ Transform the following neutral text to sound like an {mbti_type} personality:
 # ==================== 評估流程 ====================
 
 def evaluate(
-    adapter_path: str,
+    adapter_path: str = None,
     base_model: str = "Qwen/Qwen2.5-7B-Instruct",
     target_mbti: str = None,  # 如果設定，只轉換成這個 MBTI；否則用 dataset label
     ei_tf_only: bool = False,  # 是否只用 EI+TF 的 4 類型
@@ -185,12 +225,13 @@ def evaluate(
     output_file: str = None,
     device: str = "cuda",
     min_text_length: int = 30,  # 最小文本長度
+    no_lora: bool = False,  # 是否不使用 LoRA
 ):
     """
     評估 Style Transfer 模型
     
     Args:
-        adapter_path: LoRA adapter 路徑
+        adapter_path: LoRA adapter 路徑（no_lora=True 時可為 None）
         base_model: 基礎模型
         target_mbti: 固定目標 MBTI 類型（None 則使用 dataset 中的 label）
         ei_tf_only: 是否使用 EI+TF 的 4 類型模式
@@ -198,6 +239,7 @@ def evaluate(
         output_file: 輸出結果 JSON 檔案路徑
         device: 運算裝置
         min_text_length: 過濾太短的文本
+        no_lora: 是否使用 base model（不載入 LoRA）
     """
     
     # 載入 dataset
@@ -253,8 +295,9 @@ def evaluate(
     print("Loading models...")
     print("="*50)
     
-    classifier = MBTIClassifier(device="cuda")  # classifier 用 CPU 避免 OOM
-    transfer_model = StyleTransferModel(adapter_path, base_model, device)
+    classifier = MBTIClassifier(device="cuda")
+    effective_adapter = None if no_lora else adapter_path
+    transfer_model = StyleTransferModel(effective_adapter, base_model, device)
     
     # 評估
     results = []
@@ -364,6 +407,7 @@ def evaluate(
         "total_samples": total,
         "target_mbti_mode": target_mbti if target_mbti else "dataset_label",
         "ei_tf_only": ei_tf_only,
+        "no_lora": no_lora,
         "accuracy_full_match": accuracy_full,
         "accuracy_per_axis": accuracy_per_axis,
         "correct_full": correct_full,
@@ -372,11 +416,12 @@ def evaluate(
     
     # 輸出結果
     print("\n" + "="*50)
-    print("EVALUATION RESULTS")
+    print("EVALUATION RESULTS" + (" (Base Model, No LoRA)" if no_lora else " (With LoRA)"))
     print("="*50)
     print(f"Total Samples: {total}")
     print(f"Target MBTI Mode: {target_mbti if target_mbti else 'Use dataset label'}")
     print(f"EI+TF Only: {ei_tf_only}")
+    print(f"No LoRA: {no_lora}")
     print(f"\nFull Match Accuracy: {accuracy_full:.2f}% ({correct_full}/{total})")
     print("\nPer-Axis Accuracy:")
     for axis in eval_axes:
@@ -395,6 +440,7 @@ def evaluate(
             "base_model": base_model,
             "target_mbti": target_mbti,
             "ei_tf_only": ei_tf_only,
+            "no_lora": no_lora,
             "max_samples": max_samples,
             "min_text_length": min_text_length,
         },
@@ -620,10 +666,14 @@ Examples:
     python evaluate_style_transfer.py --baseline
     python evaluate_style_transfer.py --baseline --ei_tf_only
 
-    # 使用完整 16 種 MBTI
+    # 使用 base model（不用 LoRA adapter）做 style transfer
+    python evaluate_style_transfer.py --no_lora
+    python evaluate_style_transfer.py --no_lora --ei_tf_only
+
+    # 使用完整 16 種 MBTI（with LoRA）
     python evaluate_style_transfer.py --adapter_path ./mbti-transfer-lora/final
 
-    # 使用 EI+TF 4 種類型
+    # 使用 EI+TF 4 種類型（with LoRA）
     python evaluate_style_transfer.py --adapter_path ./mbti-transfer-lora/final --ei_tf_only
 
     # 固定轉換成 ET 類型（EI+TF 模式）
@@ -646,6 +696,8 @@ Examples:
                         help="固定目標 MBTI 類型 (e.g., INTJ 或 ET)。不設定則使用 dataset 中的 label")
     parser.add_argument("--ei_tf_only", action="store_true",
                         help="只使用 EI+TF 的 4 類型 (ET, EF, IT, IF)")
+    parser.add_argument("--no_lora", action="store_true",
+                        help="不使用 LoRA，直接用 base model 做 style transfer")
     parser.add_argument("--max_samples", type=int, default=None,
                         help="最大評估樣本數 (default: 全部)")
     parser.add_argument("--min_text_length", type=int, default=30,
@@ -667,8 +719,8 @@ Examples:
         )
     else:
         # LLM 模式
-        if args.adapter_path is None:
-            parser.error("--adapter_path is required for LLM mode (use --baseline for baseline evaluation)")
+        if args.adapter_path is None and not args.no_lora:
+            parser.error("--adapter_path is required for LLM mode (use --baseline for baseline evaluation, or --no_lora to use base model without adapter)")
         
         evaluate(
             adapter_path=args.adapter_path,
@@ -679,5 +731,6 @@ Examples:
             output_file=args.output,
             device=args.device,
             min_text_length=args.min_text_length,
+            no_lora=args.no_lora,
         )
 
