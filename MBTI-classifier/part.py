@@ -1,46 +1,27 @@
 import pandas as pd
 import matplotlib.pyplot as plt
 
-# 讀取資料
 df = pd.read_csv("mbti_1.csv")
 
-# -----------------------------
-# 1️⃣ MBTI 16 類型分布
-# -----------------------------
-type_counts = df["type"].value_counts().sort_values(ascending=False)
+# 16 類統計
+type_counts = df["type"].value_counts()
+
+# 2.5% 門檻
+threshold = 0.025 * len(df)
+
+# 合併小類別
+type_counts_adjusted = type_counts.copy()
+type_counts_adjusted[type_counts < threshold] = 0
+
+others_sum = type_counts[type_counts < threshold].sum()
+
+# 新的資料（含 Other）
+plot_labels = list(type_counts_adjusted[type_counts_adjusted > 0].index) + ["Other"]
+plot_sizes = list(type_counts_adjusted[type_counts_adjusted > 0].values) + [others_sum]
 
 plt.figure(figsize=(10, 10))
-plt.pie(type_counts.values, labels=type_counts.index, autopct="%1.1f%%", startangle=140)
-plt.title("MBTI Type Distribution (16 classes)")
+plt.pie(plot_sizes, labels=plot_labels, autopct="%1.1f%%", pctdistance=0.85)
+plt.title("MBTI Type Distribution (Merged Low-Frequency Types)")
 plt.tight_layout()
-plt.savefig("mbti_16types_distribution.png")
+plt.savefig("mbti_16types_merged.png")
 plt.show()
-
-print("\n=== 16 types distribution ===")
-print(type_counts)
-print("-------------------------------\n")
-
-
-# -----------------------------
-# 2️⃣ 四大維度分解 (IE / NS / FT / PJ)
-# -----------------------------
-df["IE"] = df["type"].apply(lambda x: x[0])
-df["NS"] = df["type"].apply(lambda x: x[1])
-df["FT"] = df["type"].apply(lambda x: x[2])
-df["PJ"] = df["type"].apply(lambda x: x[3])
-
-dimensions = ["IE", "NS", "FT", "PJ"]
-
-for dim in dimensions:
-    counts = df[dim].value_counts().sort_index()
-
-    plt.figure(figsize=(6, 6))
-    plt.pie(counts.values, labels=counts.index, autopct="%1.1f%%", startangle=140)
-    plt.title(f"{dim} Distribution")
-    plt.tight_layout()
-    plt.savefig(f"{dim}_distribution.png")
-    plt.show()
-
-    print(f"\n=== {dim} counts ===")
-    print(counts)
-    print("------------------------\n")
