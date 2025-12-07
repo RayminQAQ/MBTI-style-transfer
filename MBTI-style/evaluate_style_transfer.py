@@ -335,7 +335,7 @@ def evaluate(
         try:
             # Style Transfer
             transferred_text = transfer_model.transfer(neutral_text, target)
-            logger.info(f"Transferred text: {transferred_text[:200]}...")
+            # logger.debug(f"Transferred text: {transferred_text[:200]}...")
             
             # Classifier 預測 (永遠返回 4 字母)
             predicted_mbti, confidence, axis_detail = classifier.predict(transferred_text)

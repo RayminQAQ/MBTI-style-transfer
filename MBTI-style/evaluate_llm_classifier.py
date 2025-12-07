@@ -378,12 +378,12 @@ def evaluate(
         try:
             # Style Transfer（使用可能有 LoRA 的模型）
             transferred_text = transfer_llm.transfer(neutral_text, target)
-            logger.info(f"Transferred text: {transferred_text[:200]}...")
+            # logger.debug(f"Transferred text: {transferred_text[:200]}...")
             
             # LLM Classification（使用 base model，不用 LoRA）
             predicted_type, raw_response = classifier_llm.classify(transferred_text, ei_tf_only)
-            logging.debug(f"Raw response: {raw_response}")
-            logging.debug(f"Predicted type: {predicted_type}")
+            # logging.debug(f"Raw response: {raw_response}")
+            # logging.debug(f"Predicted type: {predicted_type}")
 
             
             if predicted_type == "UNKNOWN":
